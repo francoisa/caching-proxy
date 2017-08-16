@@ -1,0 +1,16 @@
+.obj:
+	mkdir -p .obj test/.obj
+
+%.o: %.cc
+
+.obj/%.o: %.cc
+	@echo "(CC) $@"
+	@$(COMPILE.cc) $(OUTPUT_OPTION) $<
+
+test/.obj/%.o: test/%.cc
+	@echo "(CC) $@"
+	@$(COMPILE.cc) $(OUTPUT_OPTION) $<
+
+%: .obj .obj/%.o
+	@@echo "(LD) $@"
+	@$(LD) $(LDLIBS) $(OBJS) -o $@
