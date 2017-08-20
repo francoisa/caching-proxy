@@ -339,7 +339,8 @@ public:
   }
 };
 
-void proxy(int clntSock, int hit, const std::vector<std::string>& dests) {
+void proxy(int clntSock, int hit,
+           const std::multimap<std::string, int>& dests) {
   // Create separate memory for client argument
   std::shared_ptr<ThreadArgs> threadArgs(new ThreadArgs);
   if (threadArgs == nullptr) {
@@ -376,7 +377,8 @@ bool init_rest_data(const std::string& json_file) {
      const auto& path = field.second.get_optional<std::string>("path");
      const auto& response = field.second.get_optional<std::string>("response");
      if (path && response) {
-       std::cout << "path=" << *path << " | response=" << *response << std::endl;
+       std::cout << "path=" << *path << " | response=" << *response
+                 << std::endl;
        if (rest_data.find(*response) == rest_data.end()) {
          rest_data[*path] = *response;
        }

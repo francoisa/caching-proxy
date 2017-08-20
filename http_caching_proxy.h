@@ -3,7 +3,7 @@
 
 #include <string>
 #include <array>
-#include <vector>
+#include <map>
 
 extern const std::string VERSION;
 
@@ -21,7 +21,7 @@ extern const int LOG;
 
 void logger(int type, const std::string& s1, const std::string& s2, int
             socket_fd);
-void proxy(int fd, int hit, const std::vector<std::string>& dests);
+void proxy(int fd, int hit, const std::multimap<std::string, int>& dests);
 
 bool init_rest_data(const std::string& json_file);
 

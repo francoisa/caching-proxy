@@ -31,3 +31,4 @@
 *.out
 *.app
 http_caching_proxy
+htdocs
