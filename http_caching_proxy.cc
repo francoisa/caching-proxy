@@ -28,6 +28,20 @@ static const int HEADER    =   45;
 static const int FORBIDDEN =  403;
 static const int NOTFOUND  =  404;
 
+#define READ  0
+#define WRITE 1
+
+#define SERVER_SOCKET_ERROR -1
+#define SERVER_SETSOCKOPT_ERROR -2
+#define SERVER_BIND_ERROR -3
+#define SERVER_LISTEN_ERROR -4
+#define CLIENT_SOCKET_ERROR -5
+#define CLIENT_RESOLVE_ERROR -6
+#define CLIENT_CONNECT_ERROR -7
+#define CREATE_PIPE_ERROR -8
+#define BROKEN_PIPE_ERROR -9
+#define SYNTAX_ERROR -10
+
 const std::array<Extension, 10> extensions = { {
    {"gif", "image/gif" },
    {"jpg", "image/jpg" },
@@ -49,6 +63,7 @@ struct ThreadArgs {
   ThreadArgs(const ThreadArgs& ta) = default;
   int clntSock; // Socket descriptor for client
   int hit;
+  std::map<std::string, int> destMap;
 };
 
 std::map<std::string, std::string> rest_data;
@@ -64,7 +79,7 @@ socket_fd) {
    if (std::strftime(mbstr, 100, "%c", std::localtime(&start_time))) {
      log << mbstr << ": ";
    }
-   
+
    switch (type) {
    case ERROR: log << "ERROR: " << s1 << ": " << s2 << " Errno = "
                    << errno << " exiting pid =" << getpid() << std::endl;
@@ -300,16 +315,16 @@ private:
   std::shared_ptr<ThreadArgs> threadArgs;
 public:
   ThreadMain(const std::shared_ptr<ThreadArgs>& ta) : threadArgs(ta) {}
-  
+
   bool main() {
     static int hit = threadArgs->hit;
-    
+
     // Extract socket file descriptor from argument
     int fd = threadArgs->clntSock;
-    
+
     long ret;
     static char buffer[BUFSIZE+1]; /* static so zero filled */
-    
+
     ret = read(fd, buffer, BUFSIZE); /* read Web request in one go */
     if (ret == 0 || ret == -1) { /* read failure stop now */
       logger(FORBIDDEN, "failed to read browser request", "", fd);
@@ -334,13 +349,12 @@ public:
     default:
       logger(LOG, "Method", buffer, fd);
     }
-    logger(LOG, "ThreadMain.main()", "finished", hit);    
+    logger(LOG, "ThreadMain.main()", "finished", hit);
     return true;
   }
 };
 
-void proxy(int clntSock, int hit,
-           const std::multimap<std::string, int>& dests) {
+void proxy(int clntSock, int hit, const std::map<std::string, int>& destMap) {
   // Create separate memory for client argument
   std::shared_ptr<ThreadArgs> threadArgs(new ThreadArgs);
   if (threadArgs == nullptr) {
@@ -349,7 +363,8 @@ void proxy(int clntSock, int hit,
   }
   threadArgs->clntSock = clntSock;
   threadArgs->hit = hit;
-  
+  threadArgs->destMap = destMap;
+
   // Create client thread
   ThreadMain tm{threadArgs};
   auto future = std::async(std::launch::async, &ThreadMain::main, &tm);
@@ -377,8 +392,7 @@ bool init_rest_data(const std::string& json_file) {
      const auto& path = field.second.get_optional<std::string>("path");
      const auto& response = field.second.get_optional<std::string>("response");
      if (path && response) {
-       std::cout << "path=" << *path << " | response=" << *response
-                 << std::endl;
+       std::cout << "path=" << *path << " | response=" << *response << std::endl;
        if (rest_data.find(*response) == rest_data.end()) {
          rest_data[*path] = *response;
        }

@@ -3,6 +3,7 @@
 #include <signal.h>
 #include <sys/socket.h>
 #include <arpa/inet.h>
+#include <netdb.h>
 
 #include <iostream>
 
@@ -30,6 +31,56 @@ void terminate(int signum) {
   }
 }
 
+void forward_data(int source, int destination) {
+    ssize_t n;
+    static const unsigned short BUFSIZE = 8192;
+    char buffer[BUFSIZE];
+
+    // read data from input socket
+    while ((n = recv(source, buffer, BUFSIZE, 0)) > 0) {
+        send(destination, buffer, n, 0); // send data to output socket
+    }
+
+    if (n < 0) {
+        logger(ERROR, "forward_data", "read", source);
+        exit(-1);
+    }
+
+    shutdown(destination, SHUT_RDWR); // stop other processes from using socket
+    close(destination);
+
+    shutdown(source, SHUT_RDWR); // stop other processes from using socket
+    close(source);
+}
+
+int connect(const std::string& host, const std::string& port) {
+    std::cout << host << ":" << port << std::endl;
+    int sock = 0;
+    addrinfo* result;
+    std::unique_ptr<addrinfo> hints{new addrinfo};
+    memset(&hints, 0, sizeof hints);
+    hints->ai_family = AF_INET;
+    hints->ai_socktype = SOCK_STREAM;
+    getaddrinfo(host.c_str(), port.c_str(), hints.get(), &result);
+    addrinfo* s = nullptr;
+    for (s = result; s != nullptr; s = s->ai_next) {
+        if ((sock = socket(s->ai_family, s->ai_socktype, s->ai_protocol)) < 0) {
+            std::cout << "ERROR: Can't create destination socket for: " << host
+                      << std::endl;
+            exit(6);
+        }
+        if (connect(sock, s->ai_addr, sizeof(s->ai_addrlen)) < 0) {
+            std::cout << "ERROR: Can't connect to host: " << host << std::endl;
+            exit(8);
+        }
+    }
+    if (s == nullptr) {
+        std::cout << "ERROR: Can't resolve host: " << host << std::endl;
+        exit(7);
+    }
+    return sock;
+}
+
 int main(int argc, char **argv) {
   po::options_description desc("Allowed options");
   desc.add_options()
@@ -38,49 +89,49 @@ int main(int argc, char **argv) {
     ("dest",      po::value<std::vector<std::string> >(), "list of comma separated host:port pairs")
     ("port",      po::value<int>(),         "tcp port")
     ;
-  
+
   po::variables_map vm;
   po::store(po::parse_command_line(argc, argv, desc), vm);
-  po::notify(vm);    
+  po::notify(vm);
 
   if (vm.count("port")) {
-    std::cout << "Listening on port " 
+    std::cout << "Listening on port "
               << vm["port"].as<int>() << std::endl;
   }
   else {
     std::cout << "Listening port was not set." << std::endl;
   }
   if (vm.count("data_dir")) {
-    std::cout << "rest api data directory " 
+    std::cout << "rest api data directory "
               << vm["data_dir"].as<std::string>() << std::endl;
   }
   else {
     std::cout << "Rest api response directory was not set." << std::endl;
   }
   if (vm.count("rest_data")) {
-    std::cout << "rest api request response configuration file " 
+    std::cout << "rest api request response configuration file "
               << vm["rest_data"].as<std::string>() << std::endl;
   }
   else {
     std::cout << "Rest api test data file was not set." << std::endl;
   }
   if (vm.count("dest")) {
-    std::cout << "destination list: " 
-              << vm["rest_data"].as<std::string>() << std::endl;
+      std::cout << "destination list: ";
+      for (auto& dest : vm["dest"].as<std::vector<std::string> >())
+          std::cout << dest << std::endl;
   }
   else {
     std::cout << "Destination list was not set." << std::endl;
   }
-  
+
   int i, socketfd, hit;
   socklen_t length;
-  static struct sockaddr_in cli_addr; /* static = initialised to zeros */
-  static struct sockaddr_in serv_addr; /* static = initialised to zeros */
-  std::multimap<std::string, int> destMap;
-  
+  static sockaddr_in cli_addr; /* static = initialised to zeros */
+
   if (vm.count("rest_data") == 0 || vm.count("data_dir") == 0 ||
       vm.count("port") == 0) {
-    std::cout << "hint: mock_rest_api --port <port> --data_dir <directory> --rest_data <rest_data>\t\tversion"
+    std::cout << "hint: mock_rest_api --port <port> --data_dir <directory> "
+              <<"""--rest_data <rest_data>\t\tversion"
               << VERSION << "\n\n"
               << "\thttp_caching_proxy is a small http proxy that saves the\n"
               << "\tsuccssful requests passed to it to a json file for future "
@@ -100,16 +151,19 @@ int main(int argc, char **argv) {
   int port = vm["port"].as<int>();
   const auto data_dir = vm["data_dir"].as<std::string>();
   const auto rest_data = vm["rest_data"].as<std::string>();
+  std::map<std::string, int> destMap;
   if (vm.count("dest") > 0) {
     for (auto& dest : vm["dest"].as<std::vector<std::string> >()) {
       std::string host = dest;
-      unsigned short port = 80;  
+      unsigned short destPort = 80;
       auto pos = dest.find(':');
+      std::string portStr = "80";
       if (pos != dest.npos) {
         host = dest.substr(0,pos);
-        std::istringstream iss(dest.substr(pos+1));
-        iss >> port;
-        if (port == 0) {
+        portStr = dest.substr(pos+1);
+        std::istringstream iss(portStr);
+        iss >> destPort;
+        if (destPort == 0) {
           std::cout << "Error parsing destination port: "
                     << dest.substr(pos+1)
                     << " at " << pos << " of "
@@ -117,8 +171,7 @@ int main(int argc, char **argv) {
           exit(-1);
         }
       }
-      std::cout << host << ":" << port << std::endl;
-      destMap.insert(std::pair<std::string, int>(host, port));
+      destMap[dest] = connect(host, portStr);
     }
   }
 
@@ -160,10 +213,13 @@ int main(int argc, char **argv) {
   if (port < 0 || port >60000)
     logger(ERROR, "Invalid port number (try 1->60000)",
            vm["port"].as<std::string>(), 0);
+  static sockaddr_in serv_addr; /* static = initialised to zeros */
   serv_addr.sin_family = AF_INET;
   serv_addr.sin_addr.s_addr = htonl(INADDR_ANY);
   serv_addr.sin_port = htons(port);
-  if (bind(listenfd, (struct sockaddr *)&serv_addr, sizeof(serv_addr)) <0)
+
+  const sockaddr* servAddr = reinterpret_cast<const sockaddr*>(&serv_addr);
+  if (bind(listenfd, servAddr, sizeof(servAddr)) <0)
     logger(ERROR, "system call", "bind", 0);
   if ( listen(listenfd, 64) < 0)
     logger(ERROR, "system call", "listen", 0);

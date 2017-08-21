@@ -21,7 +21,7 @@ extern const int LOG;
 
 void logger(int type, const std::string& s1, const std::string& s2, int
             socket_fd);
-void proxy(int fd, int hit, const std::multimap<std::string, int>& dests);
+void proxy(int fd, int hit, const std::map<std::string, int>& dests);
 
 bool init_rest_data(const std::string& json_file);
 

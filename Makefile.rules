@@ -4,11 +4,11 @@
 %.o: %.cc
 
 .obj/%.o: %.cc
-	@echo "(CC) $@"
+	@echo "(CC) $<"
 	@$(COMPILE.cc) $(OUTPUT_OPTION) $<
 
 test/.obj/%.o: test/%.cc
-	@echo "(CC) $@"
+	@echo "(CC) $<"
 	@$(COMPILE.cc) $(OUTPUT_OPTION) $<
 
 %: .obj .obj/%.o
