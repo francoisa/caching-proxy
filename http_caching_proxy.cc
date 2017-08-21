@@ -71,7 +71,7 @@ std::map<std::string, std::string> rest_data;
 void logger(int type, const std::string& s1, const std::string& s2, int
 socket_fd) {
    std::ofstream log;
-   log.open("mock_rest_api.log", std::ofstream::app);
+   log.open("http_caching_proxy.log", std::ofstream::app);
    auto start = std::chrono::system_clock::now();
    std::time_t start_time = std::chrono::system_clock::to_time_t(start);
    std::ostringstream resp;
@@ -310,14 +310,49 @@ void handle_post(char* buffer, const std::map<const char*, std::string>& header,
    close(fd);
 }
 
+
 struct ThreadMain {
 private:
   std::shared_ptr<ThreadArgs> threadArgs;
 public:
   ThreadMain(const std::shared_ptr<ThreadArgs>& ta) : threadArgs(ta) {}
+  
+  bool forward_data(int source, int destination) {
+    ssize_t n;
+    static const unsigned short BUFSIZE = 8192;
+    char buffer[BUFSIZE];
+    
+    // read data from input socket
+    while ((n = recv(source, buffer, BUFSIZE, 0)) > 0) {
+      send(destination, buffer, n, 0); // send data to output socket
+    }
+    
+    if (n < 0) {
+      logger(ERROR, "forward_data", "read", source);
+      return false;
+    }
+    
+    shutdown(destination, SHUT_RDWR); // stop other processes from using socket
+    close(destination);
+    
+    shutdown(source, SHUT_RDWR); // stop other processes from using socket
+    close(source);
+    return true;
+  }
 
-  bool main() {
-    static int hit = threadArgs->hit;
+  bool proxy() {
+    bool result = false;
+    for (auto& dest : threadArgs->destMap) {
+      result = forward_data(threadArgs->clntSock, dest.second);
+      if (result) {
+        break;
+      }
+    }
+    return result;
+  }
+  
+  bool handle() {
+    int hit = threadArgs->hit;
 
     // Extract socket file descriptor from argument
     int fd = threadArgs->clntSock;
@@ -367,7 +402,13 @@ void proxy(int clntSock, int hit, const std::map<std::string, int>& destMap) {
 
   // Create client thread
   ThreadMain tm{threadArgs};
-  auto future = std::async(std::launch::async, &ThreadMain::main, &tm);
+  if (destMap.empty()) {
+    auto future = std::async(std::launch::async, &ThreadMain::handle, &tm);
+  }
+  else {
+    auto future = std::async(std::launch::async, &ThreadMain::proxy, &tm);
+  }
+  
   logger(LOG, "web()", "finished", hit);
 }
 

@@ -31,28 +31,6 @@ void terminate(int signum) {
   }
 }
 
-void forward_data(int source, int destination) {
-    ssize_t n;
-    static const unsigned short BUFSIZE = 8192;
-    char buffer[BUFSIZE];
-
-    // read data from input socket
-    while ((n = recv(source, buffer, BUFSIZE, 0)) > 0) {
-        send(destination, buffer, n, 0); // send data to output socket
-    }
-
-    if (n < 0) {
-        logger(ERROR, "forward_data", "read", source);
-        exit(-1);
-    }
-
-    shutdown(destination, SHUT_RDWR); // stop other processes from using socket
-    close(destination);
-
-    shutdown(source, SHUT_RDWR); // stop other processes from using socket
-    close(source);
-}
-
 int connect(const std::string& host, const std::string& port) {
     std::cout << host << ":" << port << std::endl;
     int sock = 0;
@@ -165,10 +143,14 @@ int main(int argc, char **argv) {
         iss >> destPort;
         if (destPort == 0) {
           std::cout << "Error parsing destination port: "
-                    << dest.substr(pos+1)
-                    << " at " << pos << " of "
+                    << portStr << " at " << pos << " of "
                     << dest << std::endl;
           exit(-1);
+        }
+        else if (destPort < 1 || destPort > 65535) {
+          std::cerr << "Error: " << destPort << " is not between 1 and 65535."
+                    << std::endl;
+          exit(-2);
         }
       }
       destMap[dest] = connect(host, portStr);
@@ -230,6 +212,8 @@ int main(int argc, char **argv) {
       logger(ERROR, "system call", "accept", 0);
     }
     else {
+      std::cout << "Log file: " << data_dir << "/http_caching_proxy.log"
+                << std::endl;
       proxy(socketfd, hit, destMap); /* never returns */
     }
   }
