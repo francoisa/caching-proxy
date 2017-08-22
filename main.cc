@@ -59,19 +59,95 @@ int connect(const std::string& host, const std::string& port) {
     return sock;
 }
 
-int main(int argc, char **argv) {
-  po::options_description desc("Allowed options");
-  desc.add_options()
-    ("data_dir",  po::value<std::string>(), "rest api response files")
-    ("rest_data", po::value<std::string>(), "json based rest api data file")
-    ("dest",      po::value<std::vector<std::string> >(), "list of comma separated host:port pairs")
-    ("port",      po::value<int>(),         "tcp port")
-    ;
+static sockaddr_in cli_addr; /* static = initialised to zeros */
 
-  po::variables_map vm;
-  po::store(po::parse_command_line(argc, argv, desc), vm);
-  po::notify(vm);
+int daemon(int port, int& hit, const std::string& data_dir,
+           const std::map<std::string, int>& destMap) {
+  logger(LOG, "starting", "become daemon", getpid());
+  /* Become deamon + unstopable and no zombies children ( = no wait()) */
+  if (fork() != 0)
+    return 0; /* parent returns OK to shell */
+  signal(SIGCLD, SIG_IGN); /* ignore child death */
+  signal(SIGHUP, SIG_IGN); /* ignore terminal hangups */
+  signal(SIGTERM, terminate);
+  logger(LOG, "starting", "close open files", getpid());
+  for (int i = 0; i < 32; i++)
+    close(i); /* close open files */
+  setpgrp(); /* break away from process group */
+  std::ostringstream portStr;
+  portStr << port;
+  logger(LOG, "listen on port", portStr.str().c_str(), getpid());
+  /* setup the network socket */
+  if ((listenfd = socket(AF_INET, SOCK_STREAM, 0)) <0)
+    logger(ERROR, "system call", "socket", 0);
+  if (port < 0 || port >60000)
+    logger(ERROR, "Port", "Invalid number (try 1->60000)", 0);
+  static sockaddr_in serv_addr; /* static = initialised to zeros */
+  serv_addr.sin_family = AF_INET;
+  serv_addr.sin_addr.s_addr = htonl(INADDR_ANY);
+  serv_addr.sin_port = htons(port);
 
+  const sockaddr* servAddr = reinterpret_cast<const sockaddr*>(&serv_addr);
+  if (bind(listenfd, servAddr, sizeof(servAddr)) <0)
+    logger(ERROR, "system call", "bind", 0);
+  if ( listen(listenfd, 64) < 0)
+    logger(ERROR, "system call", "listen", 0);
+  for (hit = 1; true ;hit++) {
+    int socketfd;
+    socklen_t length = sizeof(cli_addr);
+    if ((socketfd = accept(listenfd,
+                           (struct sockaddr *)&cli_addr, &length)) < 0) {
+      logger(ERROR, "system call", "accept", 0);
+    }
+    else {
+      std::cout << "Log file: " << data_dir << "/http_caching_proxy.log"
+                << std::endl;
+      proxy(socketfd, hit, destMap); /* never returns */
+    }
+  }
+}
+
+void debug(int port, int& hit, const std::string& data_dir,
+           const std::map<std::string, int>& destMap) {
+  set_debug();
+  signal(SIGTERM, terminate);
+  std::ostringstream portStr;
+  portStr << port;
+  logger(LOG, "listen on port", portStr.str().c_str(), getpid());
+  /* setup the network socket */
+  if ((listenfd = socket(AF_INET, SOCK_STREAM, 0)) <0)
+    logger(ERROR, "system call", "socket", 0);
+  if (port < 0 || port >60000)
+    logger(ERROR, "Port", "Invalid number (try 1->60000)", 0);
+  static sockaddr_in serv_addr; /* static = initialised to zeros */
+  serv_addr.sin_family = AF_INET;
+  serv_addr.sin_addr.s_addr = htonl(INADDR_ANY);
+  serv_addr.sin_port = htons(port);
+
+  const sockaddr* servAddr = reinterpret_cast<const sockaddr*>(&serv_addr);
+  if (bind(listenfd, servAddr, sizeof(servAddr)) <0)
+    logger(ERROR, "system call", "bind", 0);
+  if ( listen(listenfd, 64) < 0)
+    logger(ERROR, "system call", "listen", 0);
+  for (hit = 1; true ;hit++) {
+    int socketfd;
+    socklen_t length = sizeof(cli_addr);
+    if ((socketfd = accept(listenfd,
+                           (struct sockaddr *)&cli_addr, &length)) < 0) {
+      logger(ERROR, "system call", "accept", 0);
+    }
+    else {
+      std::cout << "Log file: " << data_dir << "/http_caching_proxy.log"
+                << std::endl;
+      proxy(socketfd, hit, destMap); /* never returns */
+    }
+  }
+}
+
+void parse_command_line(const po::variables_map& vm, int& port,
+                        std::string& data_dir, std::string& rest_data,
+                        std::map<std::string, int>& destMap, bool& is_debug) {
+  is_debug = vm.count("debug") > 0;
   if (vm.count("port")) {
     std::cout << "Listening on port "
               << vm["port"].as<int>() << std::endl;
@@ -102,10 +178,6 @@ int main(int argc, char **argv) {
     std::cout << "Destination list was not set." << std::endl;
   }
 
-  int i, socketfd, hit;
-  socklen_t length;
-  static sockaddr_in cli_addr; /* static = initialised to zeros */
-
   if (vm.count("rest_data") == 0 || vm.count("data_dir") == 0 ||
       vm.count("port") == 0) {
     std::cout << "hint: mock_rest_api --port <port> --data_dir <directory> "
@@ -126,10 +198,9 @@ int main(int argc, char **argv) {
     std::cout << std::endl;
     exit(0);
   }
-  int port = vm["port"].as<int>();
-  const auto data_dir = vm["data_dir"].as<std::string>();
-  const auto rest_data = vm["rest_data"].as<std::string>();
-  std::map<std::string, int> destMap;
+  port = vm["port"].as<int>();
+  data_dir = vm["data_dir"].as<std::string>();
+  rest_data = vm["rest_data"].as<std::string>();
   if (vm.count("dest") > 0) {
     for (auto& dest : vm["dest"].as<std::vector<std::string> >()) {
       std::string host = dest;
@@ -171,50 +242,36 @@ int main(int argc, char **argv) {
     exit(4);
   }
   if (!init_rest_data(rest_data.c_str())) {
-    std::cout << "ERROR: Can't load test data from rest_data.json "
-              << std::endl;
+    std::cout << "ERROR: Can't load test data from " << data_dir << "/"
+              << rest_data << std::endl;
     exit(5);
   }
-  logger(LOG, "starting", "become daemon", getpid());
-  /* Become deamon + unstopable and no zombies children ( = no wait()) */
-  if (fork() != 0)
-    return 0; /* parent returns OK to shell */
-  signal(SIGCLD, SIG_IGN); /* ignore child death */
-  signal(SIGHUP, SIG_IGN); /* ignore terminal hangups */
-  signal(SIGTERM, terminate);
-  logger(LOG, "starting", "close open files", getpid());
-  for (i = 0; i < 32; i++)
-    close(i); /* close open files */
-  setpgrp(); /* break away from process group */
-  std::ostringstream portStr;
-  portStr << port;
-  logger(LOG, "listen on port", portStr.str().c_str(), getpid());
-  /* setup the network socket */
-  if ((listenfd = socket(AF_INET, SOCK_STREAM, 0)) <0)
-    logger(ERROR, "system call", "socket", 0);
-  if (port < 0 || port >60000)
-    logger(ERROR, "Invalid port number (try 1->60000)",
-           vm["port"].as<std::string>(), 0);
-  static sockaddr_in serv_addr; /* static = initialised to zeros */
-  serv_addr.sin_family = AF_INET;
-  serv_addr.sin_addr.s_addr = htonl(INADDR_ANY);
-  serv_addr.sin_port = htons(port);
+}
 
-  const sockaddr* servAddr = reinterpret_cast<const sockaddr*>(&serv_addr);
-  if (bind(listenfd, servAddr, sizeof(servAddr)) <0)
-    logger(ERROR, "system call", "bind", 0);
-  if ( listen(listenfd, 64) < 0)
-    logger(ERROR, "system call", "listen", 0);
-  for (hit = 1; true ;hit++) {
-    length = sizeof(cli_addr);
-    if ((socketfd = accept(listenfd,
-                           (struct sockaddr *)&cli_addr, &length)) < 0) {
-      logger(ERROR, "system call", "accept", 0);
-    }
-    else {
-      std::cout << "Log file: " << data_dir << "/http_caching_proxy.log"
-                << std::endl;
-      proxy(socketfd, hit, destMap); /* never returns */
-    }
+int main(int argc, char **argv) {
+  po::options_description desc("Allowed options");
+  desc.add_options()
+    ("data_dir",  po::value<std::string>(), "rest api response files")
+    ("rest_data", po::value<std::string>(), "json based rest api data file")
+    ("dest",      po::value<std::vector<std::string> >(), "list of comma separated host:port pairs")
+    ("port",      po::value<int>(),         "tcp port")
+    ("debug",                               "debug mode");
+    ;
+
+  po::variables_map vm;
+  po::store(po::parse_command_line(argc, argv, desc), vm);
+  po::notify(vm);
+  int port;
+  std::string data_dir;
+  std::string rest_data;
+  std::map<std::string, int> dest_map;
+  bool is_debug = false;
+  parse_command_line(vm, port, data_dir, rest_data, dest_map, is_debug);
+  int hit = 0;
+  if (is_debug) {
+    debug(port, hit, data_dir, dest_map);
+  }
+  else {
+    return daemon(port, hit, data_dir, dest_map);
   }
 }

@@ -68,10 +68,19 @@ struct ThreadArgs {
 
 std::map<std::string, std::string> rest_data;
 
+static bool is_debug = false;
+
+void set_debug() {
+  is_debug = true;
+}
+
 void logger(int type, const std::string& s1, const std::string& s2, int
 socket_fd) {
-   std::ofstream log;
-   log.open("http_caching_proxy.log", std::ofstream::app);
+   std::ofstream logfile;
+   if (!is_debug) {
+     logfile.open("http_caching_proxy.log", std::ofstream::app);
+   }
+   std::ostream& log = is_debug ? std::cout : logfile;
    auto start = std::chrono::system_clock::now();
    std::time_t start_time = std::chrono::system_clock::to_time_t(start);
    std::ostringstream resp;
@@ -109,7 +118,9 @@ socket_fd) {
    case HEADER:
      log << s1 << ":\n" << s2 << "ID: " << socket_fd << std::endl;
    }
-   log.close();
+   if (!is_debug) {
+     logfile.close();
+   }
    /* No checks here, nothing can be done with a failure anyway */
    if (type == ERROR || type == NOTFOUND || type == FORBIDDEN) {
      exit(3);
