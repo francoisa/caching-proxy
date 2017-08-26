@@ -1,28 +1,18 @@
 TST =$(TGT).t
 DEBUG =-g
-GTEST =../../googletest/googletest
-CXXFLAGS =-Wall -std=c++11 -I. $(DEBUG)
-TESTLIBS =-L/usr/local/lib -lgtest -lpthread
+BOOST =  /bb/blaw/tools/boost-1_52_0/4.8.0/
+CXXFLAGS =-Wall -std=gnu++11 -I. -I$(BOOST)/include $(DEBUG) 
 OBJS =$(patsubst %.cc,.obj/%.o,$(wildcard *.cc))
-CXX=clang++
-LD=clang++
-LDLIBS=-L/usr/local/lib -lboost_program_options -lpthread
+CXX=/bb/blaw/tools/gcc-4_8_0/4.8.0/bin/g++
+LD=/bb/blaw/tools/gcc-4_8_0/4.8.0/bin/g++
+LDLIBS=-L$(BOOST)/lib -lboost_program_options -lpthread
 
 $(TGT): $(OBJS)
-
-test/$(TST): test/.obj/$(TST).o .obj/$(TGT).o
-	@echo "(LD) $@"
-	@pwd
-	$(LD) $^ $(TESTLIBS) -o $@
 
 .obj/main.o: main.cc $(TGT).h
 
 .obj/$(TGT).o: $(TGT).cc $(TGT).h
 
-test/.obj/$(TST).o: test/$(TST).cc .obj/$(TGT).o
-
 clean:
-	$(RM) *~ .obj/*.o $(TGT) test/.obj/*.o test/$(TST)
+	$(RM) *~ .obj/*.o $(TGT) 
 
-test: test/$(TST)
-	test/$(TST)

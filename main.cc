@@ -16,7 +16,7 @@
 using namespace std;
 namespace po = boost::program_options;
 
-static int listenfd = -1;
+int listenfd = -1;
 
 void terminate(int signum) {
   if (signum == SIGTERM) {
@@ -31,38 +31,10 @@ void terminate(int signum) {
   }
 }
 
-int connect(const std::string& host, const std::string& port) {
-    std::cout << host << ":" << port << std::endl;
-    int sock = 0;
-    addrinfo* result;
-    std::unique_ptr<addrinfo> hints{new addrinfo};
-    memset(&hints, 0, sizeof hints);
-    hints->ai_family = AF_INET;
-    hints->ai_socktype = SOCK_STREAM;
-    getaddrinfo(host.c_str(), port.c_str(), hints.get(), &result);
-    addrinfo* s = nullptr;
-    for (s = result; s != nullptr; s = s->ai_next) {
-        if ((sock = socket(s->ai_family, s->ai_socktype, s->ai_protocol)) < 0) {
-            std::cout << "ERROR: Can't create destination socket for: " << host
-                      << std::endl;
-            exit(6);
-        }
-        if (connect(sock, s->ai_addr, sizeof(s->ai_addrlen)) < 0) {
-            std::cout << "ERROR: Can't connect to host: " << host << std::endl;
-            exit(8);
-        }
-    }
-    if (s == nullptr) {
-        std::cout << "ERROR: Can't resolve host: " << host << std::endl;
-        exit(7);
-    }
-    return sock;
-}
-
 static sockaddr_in cli_addr; /* static = initialised to zeros */
 
 int daemon(int port, int& hit, const std::string& data_dir,
-           const std::map<std::string, int>& destMap) {
+           const std::vector<std::pair<std::string, std::string> >& dests) {
   logger(LOG, "starting", "become daemon", getpid());
   /* Become deamon + unstopable and no zombies children ( = no wait()) */
   if (fork() != 0)
@@ -70,6 +42,7 @@ int daemon(int port, int& hit, const std::string& data_dir,
   signal(SIGCLD, SIG_IGN); /* ignore child death */
   signal(SIGHUP, SIG_IGN); /* ignore terminal hangups */
   signal(SIGTERM, terminate);
+  signal(SIGINT, terminate);
   logger(LOG, "starting", "close open files", getpid());
   for (int i = 0; i < 32; i++)
     close(i); /* close open files */
@@ -102,13 +75,13 @@ int daemon(int port, int& hit, const std::string& data_dir,
     else {
       std::cout << "Log file: " << data_dir << "/http_caching_proxy.log"
                 << std::endl;
-      proxy(socketfd, hit, destMap); /* never returns */
+      proxy(socketfd, hit, dests); /* never returns */
     }
   }
 }
 
-void debug(int port, int& hit, const std::string& data_dir,
-           const std::map<std::string, int>& destMap) {
+void debug(int port, const std::string& data_dir,
+           const std::vector<std::pair<std::string, std::string> >& dests) {
   set_debug();
   signal(SIGTERM, terminate);
   std::ostringstream portStr;
@@ -116,37 +89,35 @@ void debug(int port, int& hit, const std::string& data_dir,
   logger(LOG, "listen on port", portStr.str().c_str(), getpid());
   /* setup the network socket */
   if ((listenfd = socket(AF_INET, SOCK_STREAM, 0)) <0)
-    logger(ERROR, "system call", "socket", 0);
+    logger(ERROR, "debug", "socket creation", 0);
   if (port < 0 || port >60000)
-    logger(ERROR, "Port", "Invalid number (try 1->60000)", 0);
+    logger(ERROR, "debug", "Invalid port number (try 1->60000)", 0);
   static sockaddr_in serv_addr; /* static = initialised to zeros */
   serv_addr.sin_family = AF_INET;
   serv_addr.sin_addr.s_addr = htonl(INADDR_ANY);
   serv_addr.sin_port = htons(port);
 
   const sockaddr* servAddr = reinterpret_cast<const sockaddr*>(&serv_addr);
-  if (bind(listenfd, servAddr, sizeof(servAddr)) <0)
-    logger(ERROR, "system call", "bind", 0);
-  if ( listen(listenfd, 64) < 0)
-    logger(ERROR, "system call", "listen", 0);
-  for (hit = 1; true ;hit++) {
+  if (bind(listenfd, servAddr, sizeof(serv_addr)) <0)
+    logger(ERROR, "debug", "bind", 0);
+  if (listen(listenfd, 64) < 0)
+    logger(ERROR, "debug", "listen", 0);
+  for (int hit = 1; true ;hit++) {
     int socketfd;
     socklen_t length = sizeof(cli_addr);
     if ((socketfd = accept(listenfd,
                            (struct sockaddr *)&cli_addr, &length)) < 0) {
-      logger(ERROR, "system call", "accept", 0);
+      logger(ERROR, "debug", "accept", hit);
     }
     else {
-      std::cout << "Log file: " << data_dir << "/http_caching_proxy.log"
-                << std::endl;
-      proxy(socketfd, hit, destMap); /* never returns */
+      proxy(socketfd, hit, dests); /* never returns */
     }
   }
 }
 
 void parse_command_line(const po::variables_map& vm, int& port,
                         std::string& data_dir, std::string& rest_data,
-                        std::map<std::string, int>& destMap, bool& is_debug) {
+                        std::vector<std::pair<std::string, std::string> >& dests, bool& is_debug) {
   is_debug = vm.count("debug") > 0;
   if (vm.count("port")) {
     std::cout << "Listening on port "
@@ -224,7 +195,7 @@ void parse_command_line(const po::variables_map& vm, int& port,
           exit(-2);
         }
       }
-      destMap[dest] = connect(host, portStr);
+      dests.push_back(std::make_pair(host, portStr));
     }
   }
 
@@ -264,14 +235,14 @@ int main(int argc, char **argv) {
   int port;
   std::string data_dir;
   std::string rest_data;
-  std::map<std::string, int> dest_map;
+  std::vector<std::pair<std::string, std::string> > dests;
   bool is_debug = false;
-  parse_command_line(vm, port, data_dir, rest_data, dest_map, is_debug);
+  parse_command_line(vm, port, data_dir, rest_data, dests, is_debug);
   int hit = 0;
   if (is_debug) {
-    debug(port, hit, data_dir, dest_map);
+    debug(port, data_dir, dests);
   }
   else {
-    return daemon(port, hit, data_dir, dest_map);
+    return daemon(port, hit, data_dir, dests);
   }
 }
