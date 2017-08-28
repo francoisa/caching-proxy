@@ -1,6 +1,7 @@
 #include "http_caching_proxy.h"
 #include "server_main.h"
 
+#include <iostream>
 #include <memory>
 #include <thread>
 #include <chrono>
@@ -23,18 +24,6 @@ static const int NOTFOUND  =  404;
 #define READ  0
 #define WRITE 1
 
-const std::array<Extension, 10> extensions = { {
-   {"gif", "image/gif" },
-   {"jpg", "image/jpg" },
-   {"jpeg", "image/jpeg"},
-   {"png", "image/png" },
-   {"ico", "image/ico" },
-   {"zip", "image/zip" },
-   {"gz", "image/gz"  },
-   {"tar", "image/tar" },
-   {"htm", "text/html" },
-   {"html", "text/html" } } };
-
 const std::array<std::string, 9> BAD_DIRS = {
    { "/", "/bin", "/etc", "lib", "/tmp", "/usr", "/var", "/opt", "/proc" } };
 
@@ -46,7 +35,7 @@ void set_debug() {
   is_debug = true;
 }
 
-void logger(int type, const std::string& s1, const std::string& s2, 
+void logger(int type, const std::string& s1, const std::string& s2,
             int socket_fd, int hit) {
    std::ofstream logfile;
    if (!is_debug) {
@@ -73,7 +62,7 @@ void logger(int type, const std::string& s1, const std::string& s2,
           << "The requested URL, file type or operation is not allowed on "
           << "this simple static file webserver.\n</body></html>\n";
      write(socket_fd, resp.str().c_str(), resp.str().size());
-     log << "FORBIDDEN: " << s1 << ": " << s2<< socket_fd 
+     log << "FORBIDDEN: " << s1 << ": " << s2<< socket_fd
          << " hit: " << hit << std::endl;
      break;
    case NOTFOUND:
@@ -87,24 +76,25 @@ void logger(int type, const std::string& s1, const std::string& s2,
          << " hit: " << hit << std::endl;
      break;
    case LOG:
-     log << "INFO: " << s1 << ": " << s2 << " Socket ID: " << socket_fd 
+     log << "INFO: " << s1 << ": " << s2 << " Socket ID: " << socket_fd
          << " hit: " << hit << std::endl;
      break;
    case HEADER:
-     log << s1 << ":\n" << s2 << "Socket ID: " << socket_fd << hit << std::endl;
+     log << s1 << ":\n" << s2 << "Socket ID: " << socket_fd << " hit: "
+         << hit << std::endl;
    }
    if (!is_debug) {
      logfile.close();
    }
 }
 
-void logger(int type, const std::string& s1, std::ostringstream& oss, 
+void logger(int type, const std::string& s1, std::ostringstream& oss,
             int socket_fd, int hit) {
   logger(type, s1, oss.str(), socket_fd, hit);
   oss.str(std::string());
 }
 
-void proxy(int clntSock, int hit, 
+void proxy(int clntSock, int hit,
            const std::vector<std::pair<std::string, std::string> >& dests) {
   // Create separate memory for client argument
   ThreadArgs threadArgs;
@@ -117,17 +107,10 @@ void proxy(int clntSock, int hit,
   // Create client thread
   std::unique_ptr<ServerMain> sm{new ServerMain(threadArgs)};
 
-  if (dests.empty()) {
-    std::thread t(&ServerMain::handle, sm.get());
-    sm->up = std::move(sm);
-    t.detach();
-  }
-  else {
-    std::thread t(&ServerMain::proxy, sm.get());
-    sm->up = std::move(sm);
-    t.detach();
-  }
-  
+  std::thread t(&ServerMain::proxy, sm.get());
+  sm->up = std::move(sm);
+  t.detach();
+
   logger(LOG, "proxy", "finished", clntSock, hit);
 }
 

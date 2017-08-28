@@ -20,48 +20,46 @@ struct ThreadArgs {
 };
 
 class ServerMain {
-private:
-  ThreadArgs threadArgs;
-  std::string request;
-  std::string response;
+  private:
+    ThreadArgs threadArgs;
+    std::string request;
+    std::string response;
 
-protected:
-  void save_response(uint64_t hash) const;
+  protected:
+    bool recv_request(const std::string& mode, int source, int flags);
 
-  bool send_response(uint64_t hash);
+    bool send_request(const std::string& mode, int destination) const;
 
-  void handle_getpid(int fd) const;
+    void save_response(uint64_t hash) const;
 
-  std::string parse_path(const char* buffer, int len, int offset = 4) const;
+    bool send_response(uint64_t hash);
 
-  int connect(const std::string& host, const std::string& port) const;
+    void handle_getpid(int fd) const;
 
-  void handle_post(char* buffer, const std::map<const char*, std::string>& header,
-                   int fd, int hit);
+    std::string parse_path(const char* buffer, int len, int offset = 4) const;
 
-  void handle_get(char* buffer, std::map<const char*, std::string>& header,
-                  int fd, int hit);
+    int connect(const std::string& host, const std::string& port) const;
 
-  void parse_headers(const char* buffer, std::map<const char*, 
-                     std::string>& header);
+    void parse_headers(const char* buffer, std::map<const char*,
+                       std::string>& header);
 
-  Method parse_method(const char* buffer, int fd);
+    Method parse_method(const char* buffer, int fd);
 
-  bool get_response(const std::string& bufStr, int& code) const;
+    bool get_response(const std::string& bufStr, int& code) const;
 
-  bool forward_data(const std::string& mode, int source, int destination, 
-                    int flags, int& code, std::string& body) const; 
+    bool forward_data(const std::string& mode, int source, int destination,
+                      int flags, int& code, std::string& body) const;
 
-  bool forward_response(int source, int destination, int& code);
+    bool forward_response(int source, int destination, int& code);
 
-  bool forward_request(int source, int destination, int flags);
-public:
-  ServerMain(const ThreadArgs& ta);
-  ~ServerMain();
-  std::unique_ptr<ServerMain> up;
+    bool forward_request(int source, int destination, int flags);
+  public:
+    ServerMain(const ThreadArgs& ta);
+    ~ServerMain();
+    std::unique_ptr<ServerMain> up;
 
-  void proxy();  
-  void handle();
+    void proxy();
+    void handle();
 };
 
 #endif

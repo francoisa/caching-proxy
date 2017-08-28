@@ -19,7 +19,7 @@
 #include <ctime>
 #include <iomanip>
 
-static const int BUFSIZE   = 8096;
+static const unsigned short BUFSIZE = 8192;
 static const int HEADER    =   45;
 static const int FORBIDDEN =  403;
 static const int NOTFOUND  =  404;
@@ -76,15 +76,67 @@ int ServerMain::connect(const std::string& host, const std::string& port) const 
   return sock;
 }
 
-bool ServerMain::forward_data(const std::string& mode, int source, int destination, 
-                              int flags, int& code, std::string& body) const {
+bool ServerMain::recv_request(const std::string& mode, int source,
+                              int flags) {
   int hit = threadArgs.hit;
   ssize_t n;
-  static const unsigned short BUFSIZE = 8192;
   char buffer[BUFSIZE];
   memset(buffer, 0, BUFSIZE);
   std::ostringstream oss;
-    
+
+  logger(LOG, mode, "start", source, hit);
+
+  // read data from input socket
+  if ((n = recv(source, buffer, BUFSIZE, flags)) > 0) {
+    oss << "recv " << n << " bytes";
+    logger(LOG, mode, oss, source, hit);
+    std::string bufStr(buffer, n);
+    logger(LOG, mode, bufStr, hit);
+    request += bufStr;
+  }
+
+  bool try_again = false;
+  if (n < 0 && errno != EAGAIN) {
+    oss << "recv " << n;
+    logger(ERROR, mode, oss, source, hit);
+    return try_again;
+  }
+  try_again = (n == 0 || n == BUFSIZE || (flags != 0 && errno == EAGAIN));
+  oss << "done with try_again = " << (try_again ? "true" : "false")
+      << " errno = " << errno << " error '" << strerror(errno) << "'";
+  logger(LOG, mode, oss, source, hit);
+  return try_again;
+}
+
+bool ServerMain::send_request(const std::string& mode, int destination) const {
+  int hit = threadArgs.hit;
+  ssize_t n;
+  std::ostringstream oss;
+
+  logger(LOG, mode, "start", destination, hit);
+
+
+  // send data to output socket
+  if ((n = send(destination, request.c_str(), request.size(), 0)) < 0) {
+      logger(ERROR, mode, "send", destination, hit);
+  }
+  else {
+      oss << "send " << request.size() << " bytes";
+      logger(LOG, mode, oss, destination, hit);
+  }
+
+  bool try_again = false;
+  return try_again;
+}
+
+bool ServerMain::forward_data(const std::string& mode, int source, int destination,
+                              int flags, int& code, std::string& body) const {
+  int hit = threadArgs.hit;
+  ssize_t n;
+  char buffer[BUFSIZE];
+  memset(buffer, 0, BUFSIZE);
+  std::ostringstream oss;
+
   logger(LOG, mode, "start", source, hit);
 
   // read data from input socket
@@ -108,17 +160,17 @@ bool ServerMain::forward_data(const std::string& mode, int source, int destinati
     oss << "send " << n << " bytes";
     logger(LOG, mode, oss, destination, hit);
   }
-    
+
   bool try_again = false;
   if (n < 0 && errno != EAGAIN) {
     oss << "recv " << n;
     logger(ERROR, mode, oss, destination, hit);
     return try_again;
   }
-    
+
   try_again = (n == 0 || n == BUFSIZE || (flags != 0 && errno == EAGAIN));
-  oss << "done with try_again = " << (try_again ? "true" : "false") << " errno = " 
-      << errno << " error '" << strerror(errno) << "'";  
+  oss << "done with try_again = " << (try_again ? "true" : "false") << " errno = "
+      << errno << " error '" << strerror(errno) << "'";
   logger(LOG, mode, oss, source, hit);
   return try_again;
 }
@@ -147,7 +199,7 @@ void ServerMain::proxy() {
     int destSock = connect(dest.first, dest.second);
     std::ostringstream oss;
     for (int c = 0; try_again && c < 3; ++c) {
-      try_again = forward_request(threadArgs.clntSock, destSock, MSG_DONTWAIT);
+      try_again = recv_request("request", threadArgs.clntSock, MSG_DONTWAIT);
       std::this_thread::sleep_for(std::chrono::milliseconds(500));
     }
     Method method = parse_method(request.c_str(), threadArgs.clntSock);
@@ -172,6 +224,7 @@ void ServerMain::proxy() {
       break;
     }
     else {
+      send_request("request", destSock);
       try_again = true;
       int code = 0;
       for (int c = 0; try_again && c < 3; ++c) {
@@ -183,6 +236,9 @@ void ServerMain::proxy() {
         break;
       }
       else {
+        if (code == NOTFOUND) {
+          logger(LOG, "proxy", "not found", destSock, hit);
+        }
         response.clear();
       }
       shutdown(destSock, SHUT_RDWR); // stop other processes from using socket
@@ -191,43 +247,6 @@ void ServerMain::proxy() {
   }
   shutdown(threadArgs.clntSock, SHUT_RDWR); // stop other processes from using socket
   close(threadArgs.clntSock);
-  cleanup(up);
-}
-  
-void ServerMain::handle() {
-  int hit = threadArgs.hit;
-
-  // Extract socket file descriptor from argument
-  int fd = threadArgs.clntSock;
-
-  long ret;
-  static char buffer[BUFSIZE+1]; /* static so zero filled */
-
-  ret = read(fd, buffer, BUFSIZE); /* read Web request in one go */
-  if (ret == 0 || ret == -1) { /* read failure stop now */
-    logger(FORBIDDEN, "failed to read browser request", "", fd);
-  }
-  if (ret > 0 && ret < BUFSIZE) { /* return code is valid chars */
-    buffer[ret] = 0; /* terminate the buffer */
-  }
-  else {
-    buffer[0] = 0;
-  }
-  logger(HEADER, "Request + Header", buffer, hit++);
-  Method method = parse_method(buffer, fd);
-  std::map<const char*, std::string> header;
-  parse_headers(buffer, header);
-  switch (method) {
-  case Method::GET:
-    handle_get(buffer, header, fd, hit);
-    break;
-  case Method::POST:
-    handle_post(buffer, header, fd, hit);
-    break;
-  default:
-    logger(LOG, "Method", buffer, fd);
-  }
-  logger(LOG, "ServerMain::main", "finished", hit);
   cleanup(up);
 }
 
@@ -251,7 +270,7 @@ Method ServerMain::parse_method(const char* buffer, int fd) {
   return Method::GET;
 }
 
-void ServerMain::parse_headers(const char* buffer, 
+void ServerMain::parse_headers(const char* buffer,
                                std::map<const char*, std::string>& header) {
   int pos = 0;
   const char* request = buffer;
@@ -295,6 +314,7 @@ std::string ServerMain::parse_path(const char* buffer, int len, int offset) cons
   return std::string();
 }
 
+
 void ServerMain::handle_getpid(int fd) const {
   int hit = threadArgs.hit;
   std::ostringstream pid;
@@ -305,138 +325,6 @@ void ServerMain::handle_getpid(int fd) const {
       << "Connection: close\nContent-Type: text/plain\n\n" << pid.str();
   write(fd, out.str().c_str(), out.str().size());
   logger(HEADER, "Response Header", out, fd, hit);
-}
-
-void ServerMain::handle_get(char* buffer, std::map<const char*, 
-                            std::string>& header, int fd, int hit) {
-  std::string::size_type len, buflen;
-  int i;
-  for (i = 4;i < BUFSIZE; i++) { /* null terminate after the second space */
-    if (buffer[i] == ' ') { /* string is "GET URL " +lots of other stuff */
-      buffer[i] = 0;
-      break;
-    }
-  }
-  for (int j = 0; j < i-1; j++) { /* check for illegal parent directory use .. */
-    if (buffer[j] == '.' && buffer[j+1] == '.') {
-      logger(FORBIDDEN, "Parent directory (..) path names not supported",
-             buffer, fd, hit);
-    }
-  }
-  if (!strncmp(&buffer[0], "GET /\0", 6) ||
-      !strncmp(&buffer[0], "get /\0", 6) ) { /* convert to index file */
-    strcpy(buffer, "GET /index.html");
-  }
-  /* work out the file type and check we support it */
-  buflen = strlen(buffer);
-  std::string fext;
-  for (auto& extension : extensions) {
-    len = strlen(extension.ext);
-    if (!strncmp(&buffer[buflen-len], extension.ext, len)) {
-      fext = extension.filetype;
-      break;
-    }
-  }
-  logger(LOG, "Extension", fext, fd, hit);
-  if (fext.empty()) {
-    std::string path{&buffer[4], strlen(&buffer[4])};
-    const auto& td = threadArgs.rest_data.find(path);
-    if (td == threadArgs.rest_data.end() && path != "/getpid") {
-      logger(NOTFOUND, "path not found", &buffer[5], fd, hit);
-    }
-    else if (path == "/getpid") {
-      handle_getpid(fd);
-    }
-    else {
-      std::ifstream file;
-      file.open(threadArgs.rest_data[path]);
-      if (!file) {  /* open the file for reading */
-        logger(NOTFOUND, "failed to open file", &buffer[5], fd, hit);
-      }
-      file.seekg(0, std::ios::end);
-      std::streampos fsize = file.tellg();
-      file.seekg(0, std::ios::beg);
-      logger(LOG, "Send", &buffer[5], fd, hit);
-      std::ostringstream log;
-      log << "HTTP/1.1 200 OK\nServer: mock_rest_api/" << VERSION << ".0\n"
-          << "Content-Length: " << fsize << "\n"
-          << "Connection: close\nContent-Type: " << fext << "\n\n";
-      logger(HEADER, "Response Header", log, fd, hit);
-      write(fd, log.str().c_str(), log.str().size());
-
-      /* send file in 8KB block - last block may be smaller */
-      while (!file.eof()) {
-        int ret = file.readsome(buffer, BUFSIZE);
-        if (ret > 0) {
-          write(fd, buffer, ret);
-        }
-        else {
-          break;
-        }
-      }
-    }
-  }
-  else {
-    std::ifstream file;
-    file.open(&buffer[5]);
-    if (!file) {  /* open the file for reading */
-      logger(NOTFOUND, "failed to open file", &buffer[5], fd, hit);
-    }
-    file.seekg(0, std::ios::end);
-    std::streampos fsize = file.tellg();
-    file.seekg(0, std::ios::beg);
-    logger(LOG, "Send", &buffer[5], fd, hit);
-    std::ostringstream log;
-    log << "HTTP/1.1 200 OK\nServer: mock_rest_api/" << VERSION << ".0\n"
-        << "Content-Length: " << fsize << "\n"
-        << "Connection: close\nContent-Type: " << fext << "\n\n";
-    logger(HEADER, "Response Header", log, fd, hit);
-    write(fd, log.str().c_str(), log.str().size());
-
-    /* send file in 8KB block - last block may be smaller */
-    while (!file.eof()) {
-      int ret = file.readsome(buffer, BUFSIZE);
-      if (ret > 0) {
-        write(fd, buffer, ret);
-      }
-      else {
-        break;
-      }
-    }
-  }
-  close(fd);
-}
-
-void ServerMain::handle_post(char* buffer, 
-                             const std::map<const char*, std::string>& header,
-                             int fd, int hit) {
-  int len, buflen;
-  int i;
-  for (i = 4;i < BUFSIZE; i++) { /* null terminate after the second space to ignore extra stuff */
-    if (buffer[i] == ' ') { /* string is "GET URL " +lots of other stuff */
-      buffer[i] = 0;
-      break;
-    }
-  }
-  for (int j = 0; j < i-1; j++) { /* check for illegal parent directory use .. */
-    if (buffer[j] == '.' && buffer[j+1] == '.') {
-      logger(FORBIDDEN, "Parent directory (..) path names not supported", buffer, fd, hit);
-    }
-  }
-  /* work out the file type and check we support it */
-  buflen = strlen(buffer);
-  std::string fstr;
-  for (auto& extension : extensions) {
-    len = strlen(extension.ext);
-    if (!strncmp(&buffer[buflen-len], extension.ext, len)) {
-      fstr = extension.filetype;
-      break;
-    }
-  }
-  if (fstr.empty()) {
-    logger(FORBIDDEN, "file extension type not supported", buffer, fd, hit);
-  }
-  close(fd);
 }
 
 void ServerMain::save_response(uint64_t hash) const {
