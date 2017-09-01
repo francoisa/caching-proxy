@@ -129,79 +129,231 @@ bool ServerMain::send_request(const std::string& mode, int destination) const {
   return try_again;
 }
 
-bool ServerMain::forward_data(const std::string& mode, int source, int destination,
-                              int flags, int& code, std::string& body) const {
+static const std::string XFER_ENCODING = "Transfer-Encoding";
+static const std::string CHUNKED = "chunked";
+static const std::string CONTENT_LEN = "Content-Length";
+
+bool ServerMain::last_chunk(std::string& chunk, unsigned chunk_left) const {
+  const std::string ending = "\r\n0\r\n\r\n";
+  if (ending.size() > chunk.size()) {
+    return false;
+  }
+  bool is_last_chunk = std::equal(ending.rbegin(), ending.rend(), chunk.rbegin());
+  if (is_last_chunk) {
+    chunk.erase(chunk.size() - ending.size());
+    if (chunk_left < chunk.size()) {
+      auto chunk_size_end = chunk.find("\r\n", chunk_left + 2);
+      if (chunk_size_end != std::string::npos) {
+        auto chunk_size_str = chunk.substr(chunk_left + 2, chunk_size_end - chunk_left - 2);
+        std::ostringstream oss;
+        oss << "chunk_size_str = " << chunk_size_str<< " chunk.size() = " << chunk.size();
+        logger(LOG, "last_chunk", oss, 0, 0);
+        chunk.erase(chunk_left, chunk_size_str.size() + 4);
+      }
+      else {
+        logger(LOG, "last_chunk", "could not find 2nd to last chunk length", 0, 0);
+      }
+    }
+  }
+  return is_last_chunk;
+}
+
+unsigned ServerMain::remove_chunk_info(std::string& chunk, unsigned chunk_left) const {
+  if (chunk_left == 0) {
+    auto chunk_size_start = chunk.find("\r\n");
+    unsigned chunk_size;
+    if (chunk_size_start == 0) {
+      auto chunk_size_end = chunk.find("\r\n", 2);
+      auto chunk_size_str = chunk.substr(2, chunk_size_end - 2);
+      std::istringstream iss(chunk_size_str);
+      iss >> std::hex >> chunk_size;
+      chunk_left = chunk_size - chunk.size();
+      std::ostringstream oss;
+      oss << "chunk_size_str = " << chunk_size_str << " chunk_size = " << chunk_size;
+      logger(LOG, "remove_chunk_info", oss, 0, 0);
+      chunk.erase(0, chunk_size_str.size() + 4);
+    }
+    else {
+      std::ostringstream oss;
+      oss << "chunk_left = 0 but chunk_size_start = " << chunk_size_start;
+      logger(LOG, "remove_chunk_info", oss, 0, 0);
+    }
+  }
+  else if (chunk_left < chunk.size()) {
+    unsigned chunk_size;
+    auto chunk_size_end = chunk.find("\r\n", chunk_left + 2);
+    auto chunk_size_str = chunk.substr(chunk_left + 2, chunk_size_end - (chunk_left + 2));
+    std::istringstream iss(chunk_size_str);
+    iss >> std::hex >> chunk_size;
+    std::ostringstream oss;
+    oss << "chunk_size_str = " << chunk_size_str<< " chunk_size = " << chunk_size;
+    logger(LOG, "remove_chunk_info", oss, 0, 0);
+    chunk.erase(chunk_left, chunk_size_str.size() + 4); 
+    chunk_left = chunk_size - (chunk.size() - chunk_left);
+  }
+  return chunk_left;
+}
+
+unsigned ServerMain::remove_chunk_header_info(std::string& chunk) const {
+  auto xfer_encoding_start = chunk.find(XFER_ENCODING + ":");
+  auto xfer_encoding_end = chunk.find(CHUNKED + "\r\n", xfer_encoding_start) + 
+    CHUNKED.size() + 2;
+  chunk.erase(xfer_encoding_start, xfer_encoding_end - xfer_encoding_start);
+  auto chunk_size_start = chunk.find("\r\n\r\n") + 4;
+  auto chunk_size_end = chunk.find("\r\n", chunk_size_start);
+  std::istringstream iss(chunk.substr(chunk_size_start, chunk_size_end - chunk_size_start));
+  unsigned chunk_size;
+  iss >> std::hex >> chunk_size;
+  chunk.erase(chunk_size_start, 2 + chunk_size_end - chunk_size_start);
+  return chunk_size - (chunk.size() - chunk_size_start);
+}
+
+int ServerMain::get_buffer_content_length(const std::string& chunk) const {
+  if (chunk.find("HTTP/") == 0) {
+    auto chunk_start = chunk.find("\r\n\r\n") + 4;
+    return chunk.size() - chunk_start;
+  }
+  else {
+    return chunk.size();
+  }
+}
+
+bool ServerMain::forward_response(int source, 
+                                  int destination, int& code) {
   int hit = threadArgs.hit;
   ssize_t n;
   char buffer[BUFSIZE];
-  memset(buffer, 0, BUFSIZE);
   std::ostringstream oss;
+  static const std::string mode = "response";
 
   logger(LOG, mode, "start", source, hit);
 
-  // read data from input socket
-  if ((n = recv(source, buffer, BUFSIZE, flags)) > 0) {
-    oss << "recv " << n << " bytes";
-    logger(LOG, mode, oss, source, hit);
-    std::string bufStr(buffer, n);
-    logger(LOG, mode, bufStr, hit);
-    if (get_response(bufStr, code)) {
-      oss << "code: " << code;
-      logger(LOG, mode, oss, hit);
-      body += bufStr;
+  bool try_again = true;
+  bool is_chunked = false;
+  response.clear();
+  int recv_errno = 0;
+  int send_errno = 0;
+  std::map<std::string, std::string> headers;
+  int content_length = 0;
+  int content_left = -1;
+  unsigned chunk_left = -1;
+  while (try_again) {
+    // read data from input socket
+    memset(buffer, 0, BUFSIZE);
+    errno = 0;
+    if ((n = recv(source, buffer, BUFSIZE, 0)) > 0) {
+      if (is_chunked) {
+        oss << "chunk_left = " << chunk_left << " ";
+      }
+      oss << "recv = " << n << " bytes";
+      logger(LOG, mode, oss, source, hit);
+      std::string bufStr(buffer, n);
+      if (get_response(bufStr, code)) {
+        oss << "code: " << code;
+        logger(LOG, mode, oss, source, hit);
+      }
+
+      if (code == NOTFOUND) {
+        break;
+      }
+      if (is_chunked) {
+        if (last_chunk(bufStr, chunk_left)) {
+          logger(LOG, mode, "Last chunk", source, hit);
+          is_chunked = false;
+        }
+        else {
+          if (chunk_left >= bufStr.size()) {
+            chunk_left -= bufStr.size();
+          }
+          else {
+            chunk_left = remove_chunk_info(bufStr, chunk_left);
+          }
+          std::ostringstream oss;
+          oss << "chunk_left = " << std::dec << chunk_left 
+              << " buffer_size = " << bufStr.size();
+          logger(LOG, mode, oss, source, hit);
+        }
+      }
+      else {
+        parse_headers(buffer, headers);
+        if (headers[XFER_ENCODING] == CHUNKED) {
+          logger(LOG, mode, XFER_ENCODING + ":" + CHUNKED, source, hit);  
+          is_chunked = true;
+          chunk_left = remove_chunk_header_info(bufStr);
+          std::ostringstream oss;
+          oss << "chunk_left = " << std::dec << chunk_left 
+              << " buffer_size = " << bufStr.size();
+          logger(LOG, mode, oss, source, hit);
+        }
+        auto content_len = headers.find(CONTENT_LEN);
+        if (content_len != headers.end()) {
+          std::istringstream iss(content_len->second);
+          iss >> content_length;
+          int buffer_content_length = get_buffer_content_length(bufStr);
+          if (content_left == -1) {
+            content_left = content_length - buffer_content_length;
+          }
+          else {
+            content_left -= buffer_content_length;
+          }
+          logger(LOG, mode, content_len->first + ": " + content_len->second, 
+                 source, hit);
+          std::ostringstream oss;
+          oss << "content_length - buffer_content_length = " << content_left;
+          logger(LOG, mode, oss, source, hit);
+        }
+      }
+      logger(LOG, mode, bufStr, source, hit);
+      response += bufStr;
+      errno = 0;
+      // send data to output socket
+      if (send(destination, bufStr.c_str(),bufStr.size(), 0) < 0) {
+        logger(ERROR, mode, "send", destination, hit);
+      }
+      send_errno = errno;
+      oss << "send " << n << " bytes";
+      logger(LOG, mode, oss, destination, hit);
     }
     else {
-      code = -1;
-      body += bufStr;
+      recv_errno = errno;
     }
-    if (send(destination, buffer, n, 0) < 0) { // send data to output socket
-      logger(ERROR, mode, "send", destination, hit);
+
+    if (n < 0 && errno != EAGAIN) {
+      oss << "recv " << n;
+      logger(ERROR, mode, oss, destination, hit);
+      return false;
     }
-    oss << "send " << n << " bytes";
-    logger(LOG, mode, oss, destination, hit);
+    
+    try_again = (n == BUFSIZE) || (is_chunked && n > 0) || (content_left > 0);
+    oss << "try_again = " << (try_again ? "true" : "false") << " recv_errno = "
+        << recv_errno << " error '" << strerror(recv_errno) << "'"
+        << " send_errno = " << send_errno << " error '" << strerror(send_errno) 
+        << "'";
+    logger(LOG, mode, oss, source, hit);
   }
-
-  bool try_again = false;
-  if (n < 0 && errno != EAGAIN) {
-    oss << "recv " << n;
-    logger(ERROR, mode, oss, destination, hit);
-    return try_again;
-  }
-
-  try_again = (n == 0 || n == BUFSIZE || (flags != 0 && errno == EAGAIN));
-  oss << "done with try_again = " << (try_again ? "true" : "false") << " errno = "
-      << errno << " error '" << strerror(errno) << "'";
-  logger(LOG, mode, oss, source, hit);
-  return try_again;
-}
-
-bool ServerMain::forward_response(int source, int destination, int& code) {
-  bool result = forward_data("response", source, destination, 0, code, response);
-  return result;
-}
-
-bool ServerMain::forward_request(int source, int destination, int flags) {
-  int code = -1;
-  bool result = forward_data("request", source, destination, flags, code, request);
-  return result;
+  return false;
 }
 
 ServerMain::ServerMain(const ThreadArgs& ta) : threadArgs(ta) {}
 
 ServerMain::~ServerMain() {
   logger(LOG, "~ServerMain", "dtor", threadArgs.clntSock, threadArgs.hit);
+  logger(LOG, "----------------", "------------------", threadArgs.clntSock, threadArgs.hit);
 }
 
 void ServerMain::proxy() {
   int hit = threadArgs.hit;
+  bool is_first = true;
+  int code = 0;
   for (const auto& dest : threadArgs.dests) {
-    bool try_again = true;
+    bool try_again = is_first;
     int destSock = connect(dest.first, dest.second);
     std::ostringstream oss;
     for (int c = 0; try_again && c < 3; ++c) {
       try_again = recv_request("request", threadArgs.clntSock, MSG_DONTWAIT);
       std::this_thread::sleep_for(std::chrono::milliseconds(500));
     }
+    is_first = false;
     Method method = parse_method(request.c_str(), threadArgs.clntSock);
     int offset = method == Method::GET ? 4 : 5;
     std::string path = parse_path(request.c_str(), BUFSIZE, offset);
@@ -225,12 +377,7 @@ void ServerMain::proxy() {
     }
     else {
       send_request("request", destSock);
-      try_again = true;
-      int code = 0;
-      for (int c = 0; try_again && c < 3; ++c) {
-        try_again = forward_response(destSock, threadArgs.clntSock, code);
-        std::this_thread::sleep_for(std::chrono::milliseconds(500));
-      }
+      try_again = forward_response(destSock, threadArgs.clntSock, code);
       if (code < 399) {
         save_response(hash);
         break;
@@ -244,6 +391,12 @@ void ServerMain::proxy() {
       shutdown(destSock, SHUT_RDWR); // stop other processes from using socket
       close(destSock);
     }
+  }
+  if (code == NOTFOUND) {
+    std::string resp = "HTTP/1.1 404 Not Found\nContent-Length: 43\n" 
+      "Connection: close\nContent-Type: application/json\n\n" 
+      "{\"code\":404,\"message\":\"HTTP 404 Not Found\"}";
+    write(threadArgs.clntSock, resp.c_str(), resp.size());
   }
   shutdown(threadArgs.clntSock, SHUT_RDWR); // stop other processes from using socket
   close(threadArgs.clntSock);
@@ -271,10 +424,15 @@ Method ServerMain::parse_method(const char* buffer, int fd) {
 }
 
 void ServerMain::parse_headers(const char* buffer,
-                               std::map<const char*, std::string>& header) {
+                               std::map<std::string, std::string>& header) {
   int pos = 0;
   const char* request = buffer;
-  while(request[0] != '\0' && pos < BUFSIZE) {
+  const char* end_headers = "\r\n\r\n";
+  const char* end_headers_pos = strstr(buffer, end_headers);
+  if (end_headers_pos == nullptr || strncmp(buffer,"HTTP/1",6) != 0) {
+    return;
+  }
+  while(request[0] != '\0' && request < end_headers_pos) {
     const char* lf = strchr(request, '\n');
     if (lf == nullptr) {
       break;

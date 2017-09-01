@@ -31,8 +31,6 @@ void logger(int type, const std::string& s1, std::ostringstream& s2, int
             socket_fd = 0, int hit = 0);
 void proxy(int fd, int hit, const std::vector<std::pair<std::string, std::string> >& dests);
 
-bool init_rest_data(const std::string& json_file);
-
 enum class Method {GET, POST};
 
 #endif

@@ -115,9 +115,10 @@ void debug(int port, const std::string& data_dir,
   }
 }
 
-void parse_command_line(const po::variables_map& vm, int& port,
-                        std::string& data_dir, std::string& rest_data,
-                        std::vector<std::pair<std::string, std::string> >& dests, bool& is_debug) {
+void parse_command_line(const po::variables_map& vm, int& port, 
+                        std::string& data_dir,
+                        std::vector<std::pair<std::string, std::string> >& dests, 
+                        bool& is_debug) {
   is_debug = vm.count("debug") > 0;
   if (vm.count("port")) {
     std::cout << "Listening on port "
@@ -133,13 +134,6 @@ void parse_command_line(const po::variables_map& vm, int& port,
   else {
     std::cout << "Rest api response directory was not set." << std::endl;
   }
-  if (vm.count("rest_data")) {
-    std::cout << "rest api request response configuration file "
-              << vm["rest_data"].as<std::string>() << std::endl;
-  }
-  else {
-    std::cout << "Rest api test data file was not set." << std::endl;
-  }
   if (vm.count("dest")) {
       std::cout << "destination list: ";
       for (auto& dest : vm["dest"].as<std::vector<std::string> >())
@@ -149,17 +143,17 @@ void parse_command_line(const po::variables_map& vm, int& port,
     std::cout << "Destination list was not set." << std::endl;
   }
 
-  if (vm.count("rest_data") == 0 || vm.count("data_dir") == 0 ||
+  if (vm.count("data_dir") == 0 ||
       vm.count("port") == 0) {
     std::cout << "hint: mock_rest_api --port <port> --data_dir <directory> "
-              <<"""--rest_data <rest_data>\t\tversion"
+              <<"""--version"
               << VERSION << "\n\n"
               << "\thttp_caching_proxy is a small http proxy that saves the\n"
               << "\tsuccssful requests passed to it to a json file for future "
               << "playback.\n"
 
               << "\tExample: http_caching_proxy --port 8181 "
-              << "--data_dir /home/mock_rest_api --rest_data rest_data.json "
+              << "--data_dir /home/mock_rest_api "
               << "--dest localhost:8080 --dest localhost:9090\n\n";
 
     std::cout << "\n\tNot Supported: URLs including \"..\", Java,Javascript, CGI\n"
@@ -171,7 +165,6 @@ void parse_command_line(const po::variables_map& vm, int& port,
   }
   port = vm["port"].as<int>();
   data_dir = vm["data_dir"].as<std::string>();
-  rest_data = vm["rest_data"].as<std::string>();
   if (vm.count("dest") > 0) {
     for (auto& dest : vm["dest"].as<std::vector<std::string> >()) {
       std::string host = dest;
@@ -212,18 +205,12 @@ void parse_command_line(const po::variables_map& vm, int& port,
               << std::endl;
     exit(4);
   }
-  if (!init_rest_data(rest_data.c_str())) {
-    std::cout << "ERROR: Can't load test data from " << data_dir << "/"
-              << rest_data << std::endl;
-    exit(5);
-  }
 }
 
 int main(int argc, char **argv) {
   po::options_description desc("Allowed options");
   desc.add_options()
     ("data_dir",  po::value<std::string>(), "rest api response files")
-    ("rest_data", po::value<std::string>(), "json based rest api data file")
     ("dest",      po::value<std::vector<std::string> >(), "list of comma separated host:port pairs")
     ("port",      po::value<int>(),         "tcp port")
     ("debug",                               "debug mode");
@@ -234,10 +221,9 @@ int main(int argc, char **argv) {
   po::notify(vm);
   int port;
   std::string data_dir;
-  std::string rest_data;
   std::vector<std::pair<std::string, std::string> > dests;
   bool is_debug = false;
-  parse_command_line(vm, port, data_dir, rest_data, dests, is_debug);
+  parse_command_line(vm, port, data_dir, dests, is_debug);
   int hit = 0;
   if (is_debug) {
     debug(port, data_dir, dests);

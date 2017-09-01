@@ -1,6 +1,9 @@
 #include "http_caching_proxy.h"
 #include "server_main.h"
 
+#include <unistd.h>
+
+#include <fstream>
 #include <iostream>
 #include <memory>
 #include <thread>
@@ -10,16 +13,12 @@
 
 #include <boost/algorithm/string.hpp>
 #include <boost/lexical_cast.hpp>
-#include <boost/property_tree/json_parser.hpp>
-#include <boost/property_tree/ini_parser.hpp>
 
 const std::string VERSION = "1.0";
 const int ERROR     =   42;
 const int LOG       =   44;
 
 static const int HEADER    =   45;
-static const int FORBIDDEN =  403;
-static const int NOTFOUND  =  404;
 
 #define READ  0
 #define WRITE 1
@@ -54,27 +53,6 @@ void logger(int type, const std::string& s1, const std::string& s2,
    case ERROR: log << "ERROR: " << s1 << ": " << s2 << " Errno = "
                    << errno << " = " << std::strerror(errno) << std::endl;
      break;
-   case FORBIDDEN:
-     resp << "HTTP/1.1 403 Forbidden\nContent-Length: 185\nConnection: close\n"
-          << "Content-Type: text/html\n\n<html><head>\n"
-          << "<title>403 Forbidden</title>\n</head><body>\n"
-          << "<h1>Forbidden</h1>\n"
-          << "The requested URL, file type or operation is not allowed on "
-          << "this simple static file webserver.\n</body></html>\n";
-     write(socket_fd, resp.str().c_str(), resp.str().size());
-     log << "FORBIDDEN: " << s1 << ": " << s2<< socket_fd
-         << " hit: " << hit << std::endl;
-     break;
-   case NOTFOUND:
-     resp << "HTTP/1.1 404 Not Found\nContent-Length: 136\nConnection: close\n"
-          << "Content-Type: text/html\n\n<html><head>\n"
-          << "<title>404 Not Found</title>\n</head><body>\n"
-          << "<h1>Not Found</h1>\nThe requested URL was not found on this"
-          << " server.\n</body></html>\n";
-     write(socket_fd, resp.str().c_str(), resp.str().size());
-     log << "NOT FOUND: " << s1 << ": " << s2 << " Socket ID: " << socket_fd
-         << " hit: " << hit << std::endl;
-     break;
    case LOG:
      log << "INFO: " << s1 << ": " << s2 << " Socket ID: " << socket_fd
          << " hit: " << hit << std::endl;
@@ -83,6 +61,7 @@ void logger(int type, const std::string& s1, const std::string& s2,
      log << s1 << ":\n" << s2 << "Socket ID: " << socket_fd << " hit: "
          << hit << std::endl;
    }
+   log.flush();
    if (!is_debug) {
      logfile.close();
    }
@@ -112,40 +91,4 @@ void proxy(int clntSock, int hit,
   t.detach();
 
   logger(LOG, "proxy", "finished", clntSock, hit);
-}
-
-bool init_rest_data(const std::string& json_file) {
-   boost::property_tree::ptree ptree;
-   std::ifstream ifs(json_file);
-   if (ifs) {
-     try {
-       boost::property_tree::read_json(ifs, ptree);
-     }
-     catch (std::exception ex) {
-       std::cerr << ex.what() << std::endl;
-       exit(-1);
-     }
-   }
-   else {
-     std::cerr << json_file << " not found." << std::endl;
-     exit(-1);
-   }
-   const auto& requests = ptree.get_child("requests");
-   for (auto& field: requests) {
-     const auto& path = field.second.get_optional<std::string>("path");
-     const auto& response = field.second.get_optional<std::string>("response");
-     if (path && response) {
-       std::cout << "path=" << *path << " | response=" << *response << std::endl;
-       if (rest_data.find(*response) == rest_data.end()) {
-         rest_data[*path] = *response;
-       }
-       else {
-         std::cerr << "Duplicate path '" << *path << "' found in "
-                   << json_file << std::endl;
-         exit(-3);
-       }
-     }
-   }
-   ifs.close();
-   return true;
 }

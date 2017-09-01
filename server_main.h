@@ -26,6 +26,14 @@ class ServerMain {
     std::string response;
 
   protected:
+    int get_buffer_content_length(const std::string& chunk) const;
+
+    unsigned remove_chunk_info(std::string& chunk, unsigned chunk_left) const;
+
+    unsigned remove_chunk_header_info(std::string& chunk) const;
+
+    bool last_chunk(std::string& chunk, unsigned chunk_left) const;
+
     bool recv_request(const std::string& mode, int source, int flags);
 
     bool send_request(const std::string& mode, int destination) const;
@@ -40,19 +48,15 @@ class ServerMain {
 
     int connect(const std::string& host, const std::string& port) const;
 
-    void parse_headers(const char* buffer, std::map<const char*,
-                       std::string>& header);
+    void parse_headers(const char* buffer, 
+                       std::map<std::string, std::string>& header);
 
     Method parse_method(const char* buffer, int fd);
 
     bool get_response(const std::string& bufStr, int& code) const;
 
-    bool forward_data(const std::string& mode, int source, int destination,
-                      int flags, int& code, std::string& body) const;
-
     bool forward_response(int source, int destination, int& code);
 
-    bool forward_request(int source, int destination, int flags);
   public:
     ServerMain(const ThreadArgs& ta);
     ~ServerMain();
